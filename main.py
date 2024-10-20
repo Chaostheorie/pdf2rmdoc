@@ -49,7 +49,7 @@ def main():
 
     args.add_argument("input_pdf")
     args.add_argument("-o", "--output", required=False, help="Name of the output file")
-    args.add_argument("-u", "--upload", required=False, dest="IP", help="IP of the device to upload to (overloads --output) f.ex. 10.11.99.1")
+    args.add_argument("-u", "--upload", required=False, help="Upload to 10.11.99.1 (overloads --output)", action='store_true')
     args.add_argument("--template-name", choices=['none', 'P Grid small', 'P Grid medium'], default='none')
     args.add_argument("-n", "--name")
     args = args.parse_args()
@@ -72,7 +72,7 @@ def main():
 
     bytes_to_upload = BytesIO()
     
-    with ZipFile(bytes_to_upload if args.IP else out_name, 'w') as output_zip:
+    with ZipFile(bytes_to_upload if args.upload else out_name, 'w') as output_zip:
         page_list = [
             {
                 "id": uuid4(),
@@ -160,10 +160,10 @@ def main():
             print(f"Written page {i + 1}.")
     print("File written.")
 
-    if args.IP:
+    if args.upload:
         bytes_to_upload.seek(0)
-        print(f"Uploading to {args.IP}")
-        resp = requests.post(f"http://{args.IP}/upload", files={'file': ('file.rmdoc', bytes_to_upload, 'application/octet-stream')}).text
+        print(f"Uploading to 10.11.99.1")
+        resp = requests.post(f"http://10.11.99.1/upload", files={'file': ('file.rmdoc', bytes_to_upload, 'application/octet-stream')}).text
         print("Uploaded")
 
     
