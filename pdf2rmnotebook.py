@@ -4,6 +4,7 @@ import uuid
 import argparse
 from PyPDF2 import PdfReader, PdfWriter
 import zipfile
+import multiprocessing
 import subprocess
 from jinja2 import Environment, FileSystemLoader
 from pathlib import Path
@@ -55,7 +56,7 @@ OUTPUT_TEMP = Path("output/temp")
 
 
 def create_single_rm_file_from_single_pdf(pdf_path, out_file_path, scale):
-    # echo image {pdf_path} 0 0 0 0.7 | java -jar /tmp/draw2jd/usr/share/drawj2d/drawj2d.jar -Trm -o {out_file_path}
+    # echo image {pdf_path} 0 0 0 0.7 | java -jar /tmp/drawj2d/usr/share/drawj2d/drawj2d.jar -Trm -o {out_file_path}
 
     # Ensure the path is suitable for command line usage on windows
     # By using forward slashes for paths
@@ -65,7 +66,7 @@ def create_single_rm_file_from_single_pdf(pdf_path, out_file_path, scale):
 
     # Ensure paths are quoted to handle spaces and special characters
     command = (
-        f"echo image '{pdf_path}' 0 0 0 {scale} | draw2jd -Trm -o'{out_file_path}'"
+        f"echo image '{pdf_path}' 0 0 0 {scale} | drawj2d -Trm -o'{out_file_path}'"
     )
 
     # Execute the combined command within a shell
@@ -107,7 +108,9 @@ def create_thumbnail(pdf_path, out_file_path):
 
 
 def create_rmdoc_file(rmdoc_files_folder, rmdoc_file_name):
-    with zipfile.ZipFile(rmdoc_file_name, "w") as rmdoc_zip:
+    with zipfile.ZipFile(
+        rmdoc_file_name, mode="w", compression=zipfile.ZIP_LZMA
+    ) as rmdoc_zip:
         for root, _, files in os.walk(rmdoc_files_folder):
             for file in files:
                 file_path = os.path.join(root, file)
@@ -195,7 +198,7 @@ def _get_size_in_bytes():
     return 0
 
 
-def split_pdf_pages(pdf_files):
+def split_pdf_pages(pdf_files, pages: list[int]):
     output_paths = []  # Initialize a list to store output file paths
     total_num_pages = 0
     for pdf_file in pdf_files:
@@ -213,6 +216,9 @@ def split_pdf_pages(pdf_files):
 
         # Split each page into a separate PDF
         for i in range(num_pages_single_pdf):
+            if pages != [] and i not in pages:
+                continue
+
             writer = PdfWriter()
             writer.add_page(reader.pages[i])
 
@@ -273,6 +279,12 @@ def main():
         help="Set the output filename (default: pdf name of the first passed pdf_file",
     )
     parser.add_argument(
+        "--pages",
+        type=str,
+        default="ALL",
+        help="comma-separated list of pages or ALL",
+    )
+    parser.add_argument(
         "-s", type=float, default=0.7, help="Set the scale value (default: 0.75)"
     )
     parser.add_argument("pdf_file", nargs="+", help="PDF file/files to convert")
@@ -281,6 +293,10 @@ def main():
     scale = args.s
     if args.v:
         logger.setLevel(logging.DEBUG)
+
+    pages = []
+    if args.pages != "ALL":
+        pages = list(map(int, map(str.strip, args.pages.split(","))))
 
     # Use name of the first pdf as name of the notebook
     file_path = Path(args.pdf_file[0])
@@ -301,22 +317,41 @@ def main():
     if not os.path.exists(thumbnails_folder):
         os.makedirs(thumbnails_folder)
 
-    page_uuids = []
     # Get the list of single pdf pages from one or multiple pdf files
-    pdf_pages = split_pdf_pages(args.pdf_file)
-    for idx, pdf_page in enumerate(pdf_pages):
-        page_uuid = uuid.uuid4()
-        rm_out_file_name = f"{page_uuid}.rm"
-        thumbnail_out_file_name = f"{page_uuid}.png"
-        page_uuids.append(page_uuid)
-        rm_out_file_path = rm_files_folder / rm_out_file_name
-        thumbnail_out_file_path = thumbnails_folder / thumbnail_out_file_name
-        create_single_rm_file_from_single_pdf(pdf_page, rm_out_file_path, scale)
-        create_thumbnail(pdf_page, thumbnail_out_file_path)
+    pdf_pages = split_pdf_pages(args.pdf_file, pages)
+
+    with multiprocessing.Pool(None) as pool:
+        page_uuids = pool.map(
+            build_page,
+            map(
+                lambda x: (
+                    x,
+                    scale,
+                    rm_files_folder,
+                    thumbnails_folder,
+                ),
+                pdf_pages,
+            ),
+        )
+
     create_metadata(rmdoc_files_folder, rmdoc_uuid, page_uuids, notebook_name)
     rmdoc_file_name = str(rmdoc_files_folder) + ".rmdoc"
     create_rmdoc_file(rmdoc_files_folder, rmdoc_file_name)
     check_size(rmdoc_file_name)
+
+
+def build_page(pdf_meta):
+    (pdf_page, scale, rm_files_folder, thumbnails_folder) = pdf_meta
+
+    page_uuid = uuid.uuid4()
+    rm_out_file_name = f"{page_uuid}.rm"
+    thumbnail_out_file_name = f"{page_uuid}.png"
+    rm_out_file_path = rm_files_folder / rm_out_file_name
+    thumbnail_out_file_path = thumbnails_folder / thumbnail_out_file_name
+    create_single_rm_file_from_single_pdf(pdf_page, rm_out_file_path, scale)
+    create_thumbnail(pdf_page, thumbnail_out_file_path)
+
+    return page_uuid
 
 
 if __name__ == "__main__":
