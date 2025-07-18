@@ -1,8 +1,10 @@
 import os
+import tempfile
 import sys
 import uuid
 import argparse
 from PyPDF2 import PdfReader, PdfWriter
+from PyPDF2.generic import RectangleObject
 import zipfile
 import multiprocessing
 import subprocess
@@ -56,7 +58,7 @@ OUTPUT_TEMP = Path("output/temp")
 
 
 def create_single_rm_file_from_single_pdf(pdf_path, out_file_path, scale):
-    # echo image {pdf_path} 0 0 0 0.7 | java -jar /tmp/drawj2d/usr/share/drawj2d/drawj2d.jar -Trm -o {out_file_path}
+    # echo image {pdf_path} 0 0 0 1 | java -jar /tmp/drawj2d/usr/share/drawj2d/drawj2d.jar -Trm -o {out_file_path}
 
     # Ensure the path is suitable for command line usage on windows
     # By using forward slashes for paths
@@ -65,9 +67,7 @@ def create_single_rm_file_from_single_pdf(pdf_path, out_file_path, scale):
     out_file_path = str(out_file_path).replace("\\", "/")
 
     # Ensure paths are quoted to handle spaces and special characters
-    command = (
-        f"echo image '{pdf_path}' 0 0 0 {scale} | drawj2d -Trm -o'{out_file_path}'"
-    )
+    command = f"echo -e 'pen grey\\nimage \"{pdf_path}\" 0 0 0 {scale}' | drawj2d -Trm -o'{out_file_path}'"
 
     # Execute the combined command within a shell
     process = subprocess.Popen(
@@ -109,7 +109,7 @@ def create_thumbnail(pdf_path, out_file_path):
 
 def create_rmdoc_file(rmdoc_files_folder, rmdoc_file_name):
     with zipfile.ZipFile(
-        rmdoc_file_name, mode="w", compression=zipfile.ZIP_LZMA
+        rmdoc_file_name, mode="w", compression=zipfile.ZIP_DEFLATED
     ) as rmdoc_zip:
         for root, _, files in os.walk(rmdoc_files_folder):
             for file in files:
@@ -198,9 +198,30 @@ def _get_size_in_bytes():
     return 0
 
 
-def split_pdf_pages(pdf_files, pages: list[int]):
+def vector_filter(pdf_path: Path):
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp_path = tmp.name
+
+    gs_command = [
+        "gs",
+        "-sDEVICE=pdfwrite",
+        "-dCompatibilityLevel=1.4",
+        "-dNOPAUSE",
+        "-dBATCH",
+        "-dQUIET",
+        "-dFILTERVECTOR",
+        f"-sOutputFile={tmp_path}",
+        str(pdf_path),
+    ]
+
+    subprocess.run(gs_command, check=True)
+    shutil.move(tmp_path, pdf_path)
+
+
+def split_pdf_pages(pdf_files, pages: list[int], apply_vector_filter: bool):
     output_paths = []  # Initialize a list to store output file paths
     total_num_pages = 0
+
     for pdf_file in pdf_files:
         logger.info(f"Working on file: {pdf_file}")
         if not os.path.isfile(pdf_file):
@@ -215,8 +236,9 @@ def split_pdf_pages(pdf_files, pages: list[int]):
             OUTPUT_TEMP.mkdir(parents=True)
 
         # Split each page into a separate PDF
+        # TODO; make this use multiprocessing too, it is slow
         for i in range(num_pages_single_pdf):
-            if pages != [] and i not in pages:
+            if pages != [] and (i + 1) not in pages:
                 continue
 
             writer = PdfWriter()
@@ -228,6 +250,10 @@ def split_pdf_pages(pdf_files, pages: list[int]):
             # Write out the new PDF
             with open(output_path, "wb") as output_pdf:
                 writer.write(output_pdf)
+
+            # if selected, apply vector filter
+            if apply_vector_filter:
+                vector_filter(output_path)
 
             logger.info(f"Created: {output_path}")
             output_paths.append(output_path)  # Append the path to the list
@@ -285,6 +311,11 @@ def main():
         help="comma-separated list of pages or ALL",
     )
     parser.add_argument(
+        "--vector-filter",
+        action="store_true",
+        help="wether to use ghostscript for vector filtering",
+    )
+    parser.add_argument(
         "-s", type=float, default=0.7, help="Set the scale value (default: 0.75)"
     )
     parser.add_argument("pdf_file", nargs="+", help="PDF file/files to convert")
@@ -318,7 +349,7 @@ def main():
         os.makedirs(thumbnails_folder)
 
     # Get the list of single pdf pages from one or multiple pdf files
-    pdf_pages = split_pdf_pages(args.pdf_file, pages)
+    pdf_pages = split_pdf_pages(args.pdf_file, pages, args.vector_filter)
 
     with multiprocessing.Pool(None) as pool:
         page_uuids = pool.map(

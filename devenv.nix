@@ -1,6 +1,9 @@
 { inputs, pkgs, ... }:
 {
-  packages = [ inputs.nixos-ng.packages.${pkgs.system}.drawj2d ];
+  packages = [
+    inputs.nixos-ng.packages.${pkgs.system}.drawj2d
+    pkgs.ghostscript
+  ];
 
   cachix.enable = false;
 
